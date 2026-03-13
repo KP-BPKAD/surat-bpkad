@@ -1,2 +1,2 @@
-# web-kesekretariatan-bpkad
-Sistem Manajemen Surat BPKAD
+# Sistem Manajemen Surat BPKAD
+Aplikasi web untuk pengelolaan surat menyurat internal.
