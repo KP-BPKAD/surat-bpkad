@@ -23,8 +23,8 @@ app.use('/uploads', express.static(path.join(__dirname, 'uploads'))); // file st
 
 // === 3. RATE LIMITER ===
 const loginLimiter = rateLimit({
-  windowMs: 100 * 100 * 1000, // 1 jam
-  max: 5,
+  windowMs: 10 * 60 * 1000, 
+  max: 10,
   message: 'Terlalu banyak percobaan login. Coba lagi nanti.',
   standardHeaders: true,
   legacyHeaders: false,

@@ -27,13 +27,23 @@ const upload = multer({
   limits: { fileSize: 10 * 1024 * 1024 }
 });
 
-// 🔑 1. Route ADMIN: lihat semua surat
+// 🔑 1. Route ADMIN: lihat semua surat — filter unik berdasarkan suratId
 router.get('/all', auth, admin, async (req, res) => {
   try {
-    const letters = await Letter.find()
+    const allLetters = await Letter.find()
       .populate('pengirimId', 'email')
       .populate('penerimaId', 'email');
-    res.json(letters);
+
+    // Filter unik: satu baris per suratId (ambil yang terbaru)
+    const uniqueMap = {};
+    allLetters.forEach(letter => {
+      if (!uniqueMap[letter.suratId] || letter.createdAt > uniqueMap[letter.suratId].createdAt) {
+        uniqueMap[letter.suratId] = letter;
+      }
+    });
+    const uniqueLetters = Object.values(uniqueMap);
+
+    res.json(uniqueLetters);
   } catch (err) {
     console.error('Error di /letters/all:', err);
     res.status(500).json({ message: 'Gagal mengambil data surat.' });
@@ -70,7 +80,7 @@ router.get('/keluar', auth, async (req, res) => {
   }
 });
 
-// 📥 5. Surat KELUAR (untuk pengirim) - PENCARIAN
+// 📥 5. Surat KELUAR (untuk pengirim) - PENCARIAN — filter unik
 router.get('/keluar/search', auth, async (req, res) => {
   try {
     const { q, startDate, endDate, classificationId } = req.query;
@@ -94,18 +104,27 @@ router.get('/keluar/search', auth, async (req, res) => {
       filter.klasifikasiId = classificationId;
     }
 
-    const letters = await Letter.find(filter)
+    const allLetters = await Letter.find(filter)
       .populate('penerimaId', 'email')
       .populate('klasifikasiId', 'nama warna')
       .sort({ createdAt: -1 });
 
-    res.json(letters);
+    // ✅ Filter unik berdasarkan suratId (ambil yang terbaru)
+    const uniqueMap = {};
+    allLetters.forEach(letter => {
+      if (!uniqueMap[letter.suratId] || letter.createdAt > uniqueMap[letter.suratId].createdAt) {
+        uniqueMap[letter.suratId] = letter;
+      }
+    });
+    const uniqueLetters = Object.values(uniqueMap);
+
+    res.json(uniqueLetters);
   } catch (err) {
     res.status(500).json({ message: 'Gagal mencari surat keluar.' });
   }
 });
 
-// 📥 6. Surat MASUK (untuk penerima) - PENCARIAN
+// 📥 6. Surat MASUK (untuk penerima) - PENCARIAN — filter unik
 router.get('/masuk/search', auth, async (req, res) => {
   try {
     const { q, startDate, endDate, classificationId } = req.query;
@@ -129,44 +148,58 @@ router.get('/masuk/search', auth, async (req, res) => {
       filter.klasifikasiId = classificationId;
     }
 
-    const letters = await Letter.find(filter)
+    const allLetters = await Letter.find(filter)
       .populate('pengirimId', 'email')
       .populate('klasifikasiId', 'nama warna')
       .sort({ createdAt: -1 });
 
-    res.json(letters);
+    // ✅ Filter unik berdasarkan suratId (ambil yang terbaru)
+    const uniqueMap = {};
+    allLetters.forEach(letter => {
+      if (!uniqueMap[letter.suratId] || letter.createdAt > uniqueMap[letter.suratId].createdAt) {
+        uniqueMap[letter.suratId] = letter;
+      }
+    });
+    const uniqueLetters = Object.values(uniqueMap);
+
+    res.json(uniqueLetters);
   } catch (err) {
     res.status(500).json({ message: 'Gagal mencari surat masuk.' });
   }
 });
 
-// 🔍 7. Detail surat (bisa diakses oleh pengirim atau penerima)
+// 🔍 7. Detail surat (selalu ambil dari outgoing agar biodata muncul)
 router.get('/:id', auth, async (req, res) => {
   try {
-    // Admin bisa lihat semua
-    if (req.user.role === 'admin') {
-      const letter = await Letter.findById(req.params.id)
-        .populate('pengirimId', 'email')
-        .populate('penerimaId', 'email')
-        .populate('klasifikasiId', 'nama warna'); // ✅ TAMBAHKAN INI
-      if (!letter) return res.status(404).json({ message: 'Surat tidak ditemukan.' });
-      return res.json(letter);
+    // Ambil surat berdasarkan ID
+    const letter = await Letter.findById(req.params.id);
+    if (!letter) return res.status(404).json({ message: 'Surat tidak ditemukan.' });
+
+    // Cari salinan 'outgoing' dengan suratId yang sama agar biodata muncul
+    const outgoingLetter = await Letter.findOne({
+      suratId: letter.suratId,
+      type: 'outgoing'
+    }).populate('pengirimId', 'email')
+      .populate('penerimaId', 'email')   // ✅ Tambahkan ini
+      .populate('klasifikasiId', 'nama warna');
+
+    if (!outgoingLetter) {
+      return res.status(404).json({ message: 'Salinan pengirim tidak ditemukan.' });
     }
 
-    // User biasa: hanya boleh lihat jika dia pengirim/penerima
-    const letter = await Letter.findOne({
-      _id: req.params.id,
-      $or: [
-        { pengirimId: req.user.id },
-        { penerimaId: req.user.id }
-      ]
-    })
-      .populate('pengirimId', 'email')
-      .populate('penerimaId', 'email')
-      .populate('klasifikasiId', 'nama warna'); // ✅ TAMBAHKAN INI
+    // Pastikan user adalah pengirim atau penerima
+    const isSender = outgoingLetter.ownerId.toString() === req.user.id.toString();
+    const isReceiver = letter.ownerId.toString() === req.user.id.toString();
 
-    if (!letter) return res.status(404).json({ message: 'Surat tidak ditemukan.' });
-    res.json(letter);
+    if (!isSender && !isReceiver) {
+      return res.status(403).json({ message: 'Akses ditolak.' });
+    }
+
+    // Log akses detail surat (opsional)
+    const { logActivity } = require('../utils/logActivity');
+    await logActivity(req.user.id, 'view_letter_detail', `User melihat detail surat "${letter.noSurat}"`, req);
+
+    res.json(outgoingLetter); // Kirim salinan outgoing agar biodata muncul
   } catch (err) {
     console.error('Error di /letters/:id:', err);
     res.status(500).json({ message: 'Gagal mengambil detail surat.' });
@@ -192,6 +225,39 @@ router.delete('/:id', auth, async (req, res) => {
   } catch (err) {
     console.error('Error hapus surat via route:', err);
     res.status(500).json({ message: 'Gagal menghapus surat.' });
+  }
+});
+
+// 🔥 ADMIN: Edit surat milik siapa pun
+router.put('/admin/:id', auth, admin, upload.single('arsipDigital'), async (req, res) => {
+  try {
+    const { adminUpdateLetter } = require('../controllers/letterController');
+    return adminUpdateLetter(req, res);
+  } catch (err) {
+    console.error('Error admin update surat via route:', err);
+    res.status(500).json({ message: 'Gagal memperbarui surat.' });
+  }
+});
+
+// 🔥 ADMIN: Hapus surat milik siapa pun
+router.delete('/admin/:id', auth, admin, async (req, res) => {
+  try {
+    const { adminDeleteLetter } = require('../controllers/letterController');
+    return adminDeleteLetter(req, res);
+  } catch (err) {
+    console.error('Error admin hapus surat via route:', err);
+    res.status(500).json({ message: 'Gagal menghapus surat.' });
+  }
+});
+
+// 🔥 HAPUS PERMANEN: Semua role bisa hapus semua surat secara permanen - TANPA BATAS
+router.delete('/permanent/:id', auth, async (req, res) => {
+  try {
+    const { deleteLetterPermanent } = require('../controllers/letterController');
+    return deleteLetterPermanent(req, res);
+  } catch (err) {
+    console.error('Error hapus permanen via route:', err);
+    res.status(500).json({ message: 'Gagal menghapus surat secara permanen.' });
   }
 });
 
@@ -249,7 +315,7 @@ Tanggal Disposisi  : ${letter.tanggalDisposisi ? new Date(letter.tanggalDisposis
 Asal Surat         : ${letter.asalSurat}
 Perihal            : ${letter.perihal}
 Keterangan         : ${letter.keterangan}
-Tgl Disposisi Bidang: ${letter.tanggalDisposisiBidang ? new Date(letter.tanggalDisposisiBidang).toLocaleDateString('id-ID') : '-'}
+Tgl Disposisi Bidang: ${letter.tanggalDisposisiBidang ? new Date(letterisiBidang).toLocaleDateString('id-ID') : '-'}
 Jabatan            : ${letter.jabatan}
 Nama               : ${letter.nama}
 NIP                : ${letter.nip}
